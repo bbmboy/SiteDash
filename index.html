@@ -3603,6 +3603,9 @@ function addResult(res, quiet, opt){
       const tNew = Date.parse(res.exportedAt || 0) || 0, tCur = Date.parse(cur.d.exportedAt || 0) || 0;
       if(!cur.shared && tCur > tNew){ cur.newerThanRepo = true; return cur; }
       cur.d = res; cur.shared = true; cur.file = opt.file || cur.file; cur.newerThanRepo = false;
+      if(cur.lat == null && res.location && res.location.lat != null){
+        cur.lat = res.location.lat; cur.lon = res.location.lon; cur.addr = res.location.addr || cur.addr;
+      }
       if(!opt.bulk){ saveAll(); boot(); render(); }
       return cur;
     }
@@ -3615,7 +3618,9 @@ function addResult(res, quiet, opt){
       return cur;
     }
   }
-  const c = savedCoord(name);
+  // พิกัด: ของที่ตั้งไว้เองในเครื่องมาก่อน ถ้าไม่มีค่อยใช้พิกัดที่ฝังมากับไฟล์
+  const c = savedCoord(name) ||
+            (res.location && res.location.lat != null ? {lat:res.location.lat, lon:res.location.lon, addr:res.location.addr || ''} : null);
   const s = {id:'p'+Date.now()+'_'+SITES.length+'_'+Math.floor(Math.random()*1e4), name, note:res.note || '',
              color:PALETTE[SITES.length % PALETTE.length], on:true, d:res,
              shared: !!opt.shared, file: opt.file || null, newerThanRepo: !opt.shared,
@@ -3692,10 +3697,16 @@ async function loadShared(force){
   saveAll(); boot(); render(); fitMap();
 }
 function safeFileName(n){ return 'audit-' + String(n).replace(/[^\w฀-๿.-]+/g,'_').slice(0,45) + '.json'; }
+// ฝังพิกัดลงในไฟล์ผลลัพธ์ เพื่อให้หมุดบนแผนที่ตามไปทุกเครื่อง
+function withLocation(s){
+  const d = Object.assign({}, s.d);
+  if(s.lat != null) d.location = {lat: s.lat, lon: s.lon, addr: s.addr || ''};
+  return d;
+}
 // ดาวน์โหลดไฟล์ที่ต้องเอาไปวางในโฟลเดอร์ sites/ ของ repo
 function exportForRepo(){
-  const mine = SITES.filter(s => !s.shared || s.newerThanRepo);
-  if(!mine.length){ alert('ไซต์ทั้งหมดในพอร์ตมาจาก repo อยู่แล้ว — ไม่มีอะไรต้องอัป'); return; }
+  const mine = SITES.filter(s => !s.shared || s.newerThanRepo || s.pinChanged);
+  if(!mine.length){ alert('ไซต์ทั้งหมดในพอร์ตตรงกับ repo อยู่แล้ว — ไม่มีอะไรต้องอัป'); return; }
   const names = SITES.map(s => s.file || safeFileName(s.name));
   const idx = [...new Set(names)];
   let i = 0;
@@ -3703,10 +3714,11 @@ function exportForRepo(){
     if(i < mine.length){
       const s = mine[i++];
       const fn = s.file || safeFileName(s.name);
-      dl(new Blob([JSON.stringify(s.d)], {type:'application/json'}), fn);
+      dl(new Blob([JSON.stringify(withLocation(s))], {type:'application/json'}), fn);
       setTimeout(step, 500);
     } else {
       dl(new Blob([JSON.stringify(idx, null, 2)], {type:'application/json'}), 'index.json');
+      mine.forEach(x => { x.pinChanged = false; });
       setTimeout(() => alert('ดาวน์โหลด ' + mine.length + ' ไฟล์ + index.json แล้ว\n\n' +
         'ขั้นตอนต่อไป: เปิด repo บน GitHub → เข้าโฟลเดอร์ sites/ → Add file → Upload files → ลากไฟล์ทั้งหมดลงไป → Commit\n' +
         'อีกสักครู่หน้าเว็บจะเห็นไซต์เหล่านี้ทุกเครื่อง'), 400);
@@ -3828,7 +3840,8 @@ function renderSidebar(){
       <div class="nm"><span class="cdot" style="background:${s.color}"></span>${esc(s.name)}<span style="flex:1"></span>
         <button class="sm" style="padding:1px 6px;font-size:11px;" onclick="event.stopPropagation();PF.toggleSite('${s.id}')" title="ซ่อน/แสดงในสถิติรวม">${s.on ? '👁' : '🚫'}</button></div>
       <div class="meta">${s.d.source.from.slice(0,10)} → ${s.d.source.to.slice(0,10)} · ${F(s.d.source.days,0)} วัน${s.lat == null ? ' · <span style="color:var(--warn)">ไม่มีพิกัด</span>' : ''}
-        <br>${s.shared && !s.newerThanRepo ? '<span style="color:var(--accent2)">☁️ ทีมเห็นแล้ว</span>'
+        <br>${s.shared && !s.newerThanRepo && !s.pinChanged ? '<span style="color:var(--accent2)">☁️ ทีมเห็นแล้ว</span>'
+             : s.shared && s.pinChanged ? '<span style="color:var(--warn)">📍 เปลี่ยนพิกัดแล้ว — ยังไม่ได้อัป</span>'
              : '<span style="color:var(--warn)">💻 เฉพาะเครื่องนี้ — ยังไม่ได้อัป</span>'}</div>
       <div class="mini">
         <div>kW/RT<b style="color:${g.color}">${F(k.eff_kw_per_rt,3)}</b></div>
@@ -3867,7 +3880,7 @@ function initMap(){
   map.on('click', e => {
     if(!placing) return;
     const s = byId(placing);
-    if(s){ s.lat = e.latlng.lat; s.lon = e.latlng.lng; saveAll(); }
+    if(s){ s.lat = e.latlng.lat; s.lon = e.latlng.lng; s.pinChanged = true; saveAll(); }
     placing = null; map.getContainer().style.cursor = '';
     render(); fitMap();
   });
@@ -3903,7 +3916,7 @@ function manualCoord(id){
   if(!v) return;
   const m = v.split(/[, ]+/).map(parseFloat).filter(x => isFinite(x));
   if(m.length < 2){ alert('รูปแบบไม่ถูกต้อง — ใส่เป็น 13.7563, 100.5018'); return; }
-  s.lat = m[0]; s.lon = m[1];
+  s.lat = m[0]; s.lon = m[1]; s.pinChanged = true;
   const a = prompt('ที่อยู่ / คำอธิบาย (ไม่บังคับ):', s.addr || '');
   if(a != null) s.addr = a.trim();
   saveAll(); render(); fitMap();
@@ -4394,7 +4407,7 @@ function exportXLSX(){
 function safeName(n){ return String(n).replace(/[^\w฀-๿.-]+/g,'_').slice(0,45) || 'site'; }
 function exportSiteJSON(id){
   const s = byId(id); if(!s) return;
-  dl(new Blob([JSON.stringify(s.d)], {type:'application/json'}), 'audit-' + safeName(s.name) + '.json');
+  dl(new Blob([JSON.stringify(withLocation(s))], {type:'application/json'}), 'audit-' + safeName(s.name) + '.json');
 }
 function exportSiteXLSX(id){
   const s = byId(id); if(!s || typeof XLSX === 'undefined') return;
